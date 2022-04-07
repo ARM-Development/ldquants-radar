@@ -1,0 +1,24 @@
+name: ldquantsradar
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python
+  - geopandas
+  - boto
+  - boto3
+  - cython
+  - numpy
+  - scipy
+  - matplotlib
+  - ipykernel
+  - jupyterlab
+  - xarray
+  - netcdf4
+  - nose
+  - cartopy
+  - act-atmos
+  - arm_pyart
+  - pip
+  - pip:
+    - nexradaws
