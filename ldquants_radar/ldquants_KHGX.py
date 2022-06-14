@@ -12,7 +12,7 @@
 
  INPUT:
    LDQUANTS_Dir - directory containing the LDQUANTS (VDISQUANTS) data
-                  from the S1 and M1 TRACER sites. 
+                  from the S1 and M1 TRACER sites.
    KHGX_Dir - directory containing the KHGX Level 2 NEXRAD data
 
  KEYWORDS:
@@ -46,12 +46,10 @@ import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-# import cartopy.crs as ccrs
-# import cartopy.feature as cfeature
-# from cartopy.feature import NaturalEarthFeature
 
 import netCDF4
 import pyart
+import xarray as xr
 from pyart.util import columnsect
 
 # -------------------------
@@ -87,6 +85,48 @@ def help_message():
           + " /ARM/VAP/LDQUANTS/alldata/"
           + " /radar/KHGX/alldata/\n")
 
+
+def rain_rate_from_z_ds(ds, alpha=0.0376, beta=0.6112,
+                        refl_field="reflectivity", rr_field="rain_rate_z"):
+    """
+    As the Py-ART QPE retrievals require a radar object, recreation of these
+    functions are desirable for just a radar column subset.
+
+    Various QPE relationship to calculate rain rate given an xarray dataset.
+
+    Parameters:
+    -----------
+    ds : Xarray Dataset
+        Dataset containing the extracted radar column above a given location.
+    alpha, beta : floats, optional
+        Factor (alpha) and exponent (beta) of the power law.
+    refl_field : str, optional
+        Name of the reflectivity field to use.
+    rr_field : str, optional
+        Name of the rainfall rate field.
+
+    Returns:
+    --------
+    ds : Xarray Dataset
+        Returns the inputed dataset array with a new rain rate dataarray
+    """
+    rain_z = ds[refl_field].copy()
+
+    rr_data = alpha*np.ma.power(np.ma.power(10., 0.1 * rain_z), beta)
+
+    ds[rr_field] = (['epoch', 'height'], rr_data)
+
+    field_attrs = {"units" : "mm/h",
+                   "standard_name" : "rain_rate_z",
+                   "long_name" : "rainfall_rate_from_z",
+                   "valid_min" : 0,
+                   "valid_max" : 500,
+                   "alpha" : alpha,
+                   "beta" : beta}
+
+    ds[rr_field].attrs = field_attrs
+
+    return ds
 
 def plot_ppirhi(display, nradar, ldquants, tsync, nazimuth,
                 ndistance, ncolumn):
@@ -162,7 +202,7 @@ def plot_ppirhi(display, nradar, ldquants, tsync, nazimuth,
     plt.close(fig)
 
 
-def plot_his(data_m1, data_s1, brange, nbin):
+def plot_hist2d(ds_radar, ds_ld, brange, nbin):
 
     """
     To calculate the bi-dimensional histogram of two data samples
@@ -170,14 +210,12 @@ def plot_his(data_m1, data_s1, brange, nbin):
 
     Parameters
     ----------
-    data_m1 : dict
-             Dictionary containing int/float values of radar field
-             parameters from the Houston NEXRAD radar and M1-site
-             LDQUANTS data that are desired to be displayed
-    data_s1 : dict
-             Dictionary containing int/float values of radar
-             field parameters from the Houston NEXRAD radar and
-             M1-site LDQUANTS data that are desired to be displayed
+    ds_radar : xarray Dataset
+             Dataset containing the radar fields of the lowest gate above
+             the disdrometer site.
+    ds_ld : xarray Dataset
+             Dataset containing the disdrometer data that corresponds to the
+             radar fields
     brange : list
              List in the format [xmin, xmax, ymin, ymax] for values
              to be binned within a 2D histogram
@@ -190,50 +228,141 @@ def plot_his(data_m1, data_s1, brange, nbin):
              Saves *png file for the plot.
     """
     # create the subplots
-    fig, axarr = plt.subplots(2, 2, figsize=(12.80, 6.45))
+    fig, axarr = plt.subplots(2, 1, figsize=(8, 8))
+    fig.subplots_adjust(hspace=0.2)
+    # create short name for reflectivity
+    reflect = 'reflectivity_factor_sband20c'
     # Plot the data.
-    axarr[0, 0].hist2d(data_m1['LD_Z'], data_m1['rhi_data'],
-                       range=[[brange[0], brange[1]], [brange[2], brange[3]]],
-                       norm=mpl.colors.LogNorm(),
-                       cmap=mpl.cm.jet)
+    counts, xedges, yedges, im = axarr[0].hist2d(ds_ld[reflect][:],
+                                                 ds_radar.reflectivity[:],
+                                                 range=[[brange[0],
+                                                         brange[1]],
+                                                        [brange[2],
+                                                         brange[3]]],
+                                                 bins=nbin,
+                                                 norm=mpl.colors.LogNorm(),
+                                                 cmap=mpl.cm.jet)
     # Add a 1:1 ratio line
-    axarr[0, 0].plot(np.arange(brange[0] - 10, brange[1] + 10, 1),
-                     np.arange(brange[0] - 10, brange[1] + 10, 1), 'k')
+    axarr[0].plot(np.arange(brange[0] - 10, brange[1] + 10, 1),
+                  np.arange(brange[0] - 10, brange[1] + 10, 1), 'k')
     # Define axe titles for the figure.
-    axarr[0, 0].set_ylabel(r'KHGX $Z_e$ [dBZ]')
-    axarr[0, 0].set_xlabel(r'LDQUANTS M1-Site Derived $Z_e$ [dBZ]')
+    axarr[0].set_ylabel(r'KHGX $Z_e$ [dBZ]')
+    axarr[0].set_xlabel(r'LDQUANTS Derived $Z_e$ [dBZ]')
+    # Display the colorbar and colorbar label
+    fig.colorbar(im, ax=axarr[0], label='Counts [#]')
+
     # Plot the data.
-    axarr[0, 1].hist2d(data_m1['VD_Z'], data_m1['rhi_data'],
-                       range=[[brange[0], brange[1]], [brange[2], brange[3]]],
-                       norm=mpl.colors.LogNorm(), cmap=mpl.cm.jet)
-    axarr[0, 1].plot(np.arange(brange[0] - 10, brange[1] + 10, 1),
-                     np.arange(brange[0] - 10, brange[1] + 10, 1), 'k')
-    axarr[0, 1].set_xlabel(r'VDISQUANTS M1-Site Derived $Z_e$ [dBZ]')
-    axarr[0, 1].set_ylabel(r'KHGX $Z_e$ [dBZ]')
-    # Plot the data.
-    axarr[1, 0].hist2d(data_s1['LD_Z'], data_s1['rhi_data'],
-                       range=[[brange[0], brange[1]], [brange[2], brange[3]]],
-                       norm=mpl.colors.LogNorm(), cmap=mpl.cm.jet)
-    axarr[1, 0].plot(np.arange(brange[0] - 10, brange[1] + 10, 1),
-                     np.arange(brange[0] - 10, brange[1] + 10, 1), 'k')
-    axarr[1, 0].set_xlabel(r'LDQUANTS S1-Site Derived $Z_e$ [dBZ]')
-    axarr[1, 0].set_ylabel(r'KHGX $Z_e$ [dBZ]')
-    # Hide the blank subplot
-    axarr[1, 1].set_visible(False)
+    # Create short name for rain rates
+    rain = 'rain_rate_z'
+    print('rain_rate max: ', np.max(ds_ld.rain_rate), np.max(ds_radar.rain_rate_z))
+    counts, xedges, yedges, im = axarr[1].hist2d(ds_ld.rain_rate[:],
+                                                 ds_radar[rain][:],
+                                                 range=[[0, 5], [0, 5]],
+                                                 bins=nbin,
+                                                 norm=mpl.colors.LogNorm(),
+                                                 cmap=mpl.cm.jet)
+    # Add a 1:1 ratio line
+    axarr[1].plot(np.arange(brange[0] - 10, brange[1] + 10, 1),
+                  np.arange(brange[0] - 10, brange[1] + 10, 1), 'k')
+    axarr[1].set_xlabel(r'LDQUANTS Rain Rate [mm/hr]')
+    axarr[1].set_ylabel(r'KHGX Derived Rain Rate [mm/hr]')
+    # Plot the colorbar and colorbar label
+    fig.colorbar(im, ax=axarr[1], label='Counts [#]')
+
     # plot the title
-    if data_m1['date'][0] == data_m1['date'][-1]:
-        plt.suptitle(data_m1['date'][0]
-                     + ' Equivalent Radar Reflectivity Factor Comparison')
+    date_zero = datetime.datetime.utcfromtimestamp(
+                                  ds_radar['epoch'].data[0]).strftime('%Y%m%d')
+    date_last = datetime.datetime.utcfromtimestamp(
+                                  ds_radar['epoch'].data[-1]).strftime('%Y%m%d')
+    if date_zero != date_last:
+        plt.suptitle('KHGX-LDQUANTS Comparison (' + date_zero + ' - '
+                     + date_last + ')')
+        nout = ('ldquants_KHGX_' + date_zero + '_' + date_last
+                + '_fullComparison.png')
+        plt.savefig(nout, dpi=200)
+        plt.close(fig)
     else:
-        plt.suptitle(data_m1['date'][0] + ' - ' + data_m1['date'][-1]
-                     + ' Equivalent Radar Reflectivity Factor Comparison')
-    # Save the figure.
-    nout = ('ldquantsRadar_' + radar.metadata['instrument_name'] + '_'
-            + radar.time['units'].split(' ')[-1].split('T')[0]
-            + 'fullComparison.png')
-    plt.savefig(nout, dpi=100)
-    # Close the figure.
-    plt.close(fig)
+        plt.suptitle('KHGX-LDQUANTS Comparison (' + date_zero + ' )')
+        # Save the figure.
+        nout = ('ldquants_KHGX' + '_' + date_zero + '_fullComparison.png')
+        plt.savefig(nout, dpi=200)
+        # Close the figure.
+        plt.close(fig)
+
+
+def plot_timeseries(column, ld):
+    """
+    To display the reflectivity above the disdrometer site
+    along with associated laser disdrometer information.
+    """
+    fig, axs = plt.subplots(1, 2, figsize=[12,6], sharex=True)
+    fig.subplots_adjust(hspace=0.2, wspace=0.2)
+    #-----------------------------------------------
+    # Reflectivity over the disdrometer site
+    #-----------------------------------------------
+    column.reflectivity.plot(x='epoch', ax=axs[0],
+                             cmap='pyart_HomeyerRainbow',
+                             vmin=-20,
+                             vmax=40)
+    #col_start = datetime.datetime.fromtimestamp(column.epoch[0])
+    #col_end = datetime.datetime.fromtimestamp(column.epoch[-1])
+    axs[0].set_xlim([column.epoch[0], column.epoch[-1]])
+    # Set the labels
+    axs[0].set_xlabel('Date [HHMM UTC MM/DD/YYYY]')
+    axs[0].set_ylabel('Height Above Disdrometer [meters]')
+    # Grab the xticks
+    xticks = axs[0].get_xticks()
+    # Define new ticks
+    newticks = []
+    for tick in xticks:
+        newticks.append(datetime.datetime.
+                        utcfromtimestamp(tick).strftime("%H%M UTC %m/%d/%Y"))
+    axs[0].set_xticklabels(newticks)
+
+    #------------------------------------------------
+    # Disdrometer Rain rate and Radar rain rate
+    #------------------------------------------------
+    ld.rain_rate.plot(x='epoch')
+    axs[1].set_xlim([ld.epoch[0], ld.epoch[-1]])
+    # Set the labels
+    axs[1].set_xlabel('Date [HHMM UTC MM/DD/YYYY]')
+    axs[1].set_ylabel('Rain Rate [mm/hr]')
+    # Grab the xticks
+    xticks = axs[1].get_xticks()
+    # Define new ticks
+    newticks = []
+    for tick in xticks:
+        newticks.append(datetime.datetime.
+                        utcfromtimestamp(tick).strftime("%H%M UTC %m/%d/%Y"))
+    axs[1].set_xticklabels(newticks)
+    # Set the axe labels
+    axs[1].set_xlabel('Date [HHMM UTC MM/DD/YYYY]')
+    #axs[1].set_ylabel('Height Above Disdrometer [meters]')
+    # format for dates
+    fig.autofmt_xdate()
+    # Twin Y-Axis for Accumulation
+    ax2 = axs[1].twinx()
+    p1, = ax2.plot(ld.epoch, ld['rain_rate'].cumsum()*(1/60.), color='orange')
+    ax2.set_ylabel("Accumulation [mm]")
+    ax2.yaxis.label.set_color(p1.get_color())
+
+    # plot the title
+    date_zero = datetime.datetime.utcfromtimestamp(
+                                  column['epoch'].data[0]).strftime('%Y%m%d')
+    date_last = datetime.datetime.utcfromtimestamp(
+                                  column['epoch'].data[-1]).strftime('%Y%m%d')
+    if date_zero != date_last:
+        plt.suptitle('KHGX-LDQUANTS Timeseries ('+ date_zero + ' - '
+                     + date_last + ')')
+        nout = ('ldquants_KHGX_timeseries_' + date_zero + '_' + date_last
+                + '.png')
+        plt.savefig(nout, dpi=200)
+        plt.close(fig)
+    else:
+        plt.suptitle('KHGX-LDQUANTS Timeseries (' + date_zero + ')')
+        nout = ('ldquants_KHGX_timeseries_' + date_zero + '.png')
+        plt.savefig(nout, dpi=200)
+        plt.close(fig)
 
 
 # -------------------------
@@ -262,10 +391,8 @@ else:
     ld_dir = sys.argv[-2]
     rad_dir = sys.argv[-1]
 
-# Define the present working directory. 
+# Define the present working directory.
 pwd = os.getcwd()
-print(ld_dir)
-print(rad_dir)
 
 # -------------------------------------------------------------------
 # IV) Iterate over successful downloads.
@@ -274,33 +401,29 @@ print(rad_dir)
 
 # initiate a dictionary to hold the striped out data
 # from each scan.
-ndata_m1 = {'date': [], 'time': [], 'xGate': [], 'yGate': [], 'zGate': [],
-            'tarDis': [], 'tarAzi': [], 'rhi_data': [], 'rain_data': [],
-            'LD_rain': [], 'LD_Z': [], 'VD_rain': [], 'VD_Z': [],
-            }
-
-ndata_s1 = {'date': [], 'time': [], 'xGate': [], 'yGate': [], 'zGate': [],
-            'tarDis': [], 'tarAzi': [], 'rhi_data': [], 'rain_data': [],
-            'LD_rain': [], 'LD_Z': []
-            }
+ld_data = {'epoch': [], 'rain_rate': [], 'reflectivity_factor_sband20c': [],
+           'lwc': [], 'total_droplet_concentration': [], 'med_diameter': [],
+          }
 
 # Change directory to the LDQUANTS file directory.
 os.chdir(ld_dir)
 # blank list to hold all the xrray datasets before merging
 ds_all = []
-time1 = time.time()
+ds_one = []
 # iterate over the local files.
 for file in sorted(glob.glob("*.nc")):
-    # check to make sure which file we are using. 
+    # check to make sure which file we are using.
     ld_date = file.split('.')[2]
-    # Grab the lat/lon from the LDQUANTS file. 
+    # Grab the lat/lon from the LDQUANTS file.
     nc_fid = netCDF4.Dataset(file)
+    # Find the times for the file (epoch)
+    nc_times = nc_fid['time_offset'][:].data + nc_fid['base_time'][:].data
     # change to radar directory
     os.chdir(pwd+'/'+rad_dir)
     # check to see which radar file matches
-    for rad in sorted(glob.glob("KHGX*")):
-        rad_date = rad.split("_")[0][4:]
-        if rad_date == ld_date and rad.split("_")[-1] != "MDM":
+    glob_tmp = "KHGX"+ld_date+"*"
+    for rad in sorted(glob.glob(glob_tmp)):
+        if rad[-3:] != "MDM":
             print('YES-Match: ', rad, file)
             # read the radar file into PY-ART object
             radar = pyart.io.read(rad)
@@ -313,54 +436,61 @@ for file in sorted(glob.glob("*.nc")):
                                             "%Y-%m-%d %H:%M:%S")
             coor_ad = column.assign_coords(epoch=dt.timestamp())
             ncolumn = coor_ad.expand_dims('epoch')
-            # Append to the xrray dataset list
-            ds_all.append(ncolumn)
+            # Make sure there are no duplicate height indices
+            index = np.unique(column['height'], return_index=True)
+            ncolumn = ncolumn.isel(height=index[1])
+             # Interpolate heights
+            ncolumn.interp(height=np.arange(100, 3000, 100))
+            # Append to the xrray dataset list. Interpolate heights
+            ds_all.append(ncolumn.interp(height=np.arange(100, 3000, 100)))
+            # Determine where the LDQUANTS data matches the epoch time
+            syncx = np.where(nc_times >= dt.timestamp())
+            syncy = np.where(nc_times <=
+                            (dt.timestamp() + radar.time['data'][-1]))
+            sync = np.intersect1d(syncx, syncy)
+            # Append to the LDQUANTS data directory
+            ld_data['epoch'].append(dt.timestamp())
+            for key in ld_data:
+                if key != 'epoch':
+                    ld_data[key].append(np.ma.average(
+                                        nc_fid.variables[key][sync]))
     # change back to LDQUANTS file directory
     os.chdir(pwd+'/'+ld_dir)
     # Close the netcdf file.
     nc_fid.close()
 
-"""
-for loc_file in downloads.iter_success():
-    # check to make sure not to use the MDM files
-    if loc_file.filepath[-3:] != 'MDM':
-        # print the file
-        print(loc_file)
-        # Read in the file.
-        radar = pyart.io.read(loc_file.filepath)
-        # Create the Radar Display
-        display = pyart.graph.RadarDisplay(radar)
-        # Calculate estimated rainfall rate from reflectivty
-        rain = pyart.retrieve.qpe.est_rain_rate_z(radar)
-        # Add the estimated rainfall rate back into the radar object
-        radar.add_field('est_rainfall_rate', rain)
+# Combine the dataset to merge all columnar data.
+ds = xr.concat(ds_all, 'epoch')
 
-        # Call the plotting function
-        if pflag is True:
-            plot_ppirhi(display, radar, nc_M, time_sync_M1,
-                        azim_M1, dis_M1, colrain_m1)
-"""
-time2 = time.time()
-print(time2-time1)
+# Convert the LD dictionary to xarray dataset
+container = []
+for key in ld_data:
+    if key != 'epoch':
+        da = xr.DataArray(ld_data[key], coords=[ld_data['epoch']],
+                          name=key, dims=['epoch'])
+        container.append(da)
+ld_ds = xr.merge(container)
+
+# Calculate rain rate for the extracted column
+dsA = rain_rate_from_z_ds(ds)
+
 # -----------------------------------------------
 # V) Plot the 2D-Histrogram for the entire date
 # ----------------------------------------------
 
 # Define the range of values to be binned
-his_range = [-35, 70, -35, 70]
-NBINS = 90
+his_range = [-30, 70, -30, 70]
+NBINS = 100
 
-# call the plot_his function
-#plot_his(ndata_m1, ndata_s1, his_range, NBINS)
+# plot the timeseries
+plot_timeseries(ds, ld_ds)
+
+# plot the histogram
+plot_hist2d(ds.isel(height=1), ld_ds, his_range, NBINS)
 
 # --------------------
 # VI) END OF PROGRAM
 # --------------------
-
-# Close the netCDF file.
-##nc_M.close()
-##nc_S.close()
-##nc_V.close()
 
 # define the ending time of the program for testing purposes
 t1 = time.time()
